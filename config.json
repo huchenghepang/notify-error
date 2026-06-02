@@ -4,7 +4,15 @@
       "url": "https://www.google.com",
       "expected_status": 200,
       "expected_keyword": "",
-      "timeout_secs": 10,
+      "timeout_secs": 5,
+      "method": "GET",
+      "custom_alert_message": "🚨 网站 {url} 访问失败！\n状态码: {status_code}\n错误信息: {error_message}\n响应时间: {response_time}ms\n时间: {timestamp}"
+    },
+    {
+      "url": "https://web.whatsapp.com",
+      "expected_status": 200,
+      "expected_keyword": "",
+      "timeout_secs": 5,
       "method": "GET",
       "custom_alert_message": "🚨 网站 {url} 访问失败！\n状态码: {status_code}\n错误信息: {error_message}\n响应时间: {response_time}ms\n时间: {timestamp}"
     }

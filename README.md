@@ -265,19 +265,9 @@ cargo run
 ### Windows上运行
 
 1. 创建配置文件 `.env` 和 `config.json`（参考前面的配置说明）
-2. 在命令提示符(CMD)中运行：
+2. 在命令提示符或PowerShell中运行：
    ```cmd
    url-monitor.exe
-   ```
-
-   在PowerShell中运行（注意需要使用 `.\` 前缀）：
-   ```powershell
-   .\url-monitor.exe
-   ```
-
-   如果遇到执行策略错误，请先运行以下命令允许本地脚本执行：
-   ```powershell
-   Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
    ```
 
 ## 开机自启和后台执行
