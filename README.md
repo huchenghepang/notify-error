@@ -1,106 +1,43 @@
 # URL 监控工具
 
-一个用于监控网站可用性的 Rust 应用程序，支持飞书机器人通知和自定义配置。
+一个 Rust 编写的网站可用性监控工具，定时检查目标 URL 状态，异常时通过飞书机器人发送告警通知。
 
 ## 功能特性
 
-- 监控多个网站的可用性
-- 支持自定义HTTP方法、状态码、超时等
+- 监控多个 URL 的可用性
+- 支持自定义 HTTP 方法、请求头、超时时间
 - 飞书机器人通知（支持签名验证）
-- 自定义报警信息模板
+- 自定义告警消息模板
 - 关键词内容检查
-- 故障阈值控制（避免短暂波动）
-- 恢复通知
+- 故障阈值控制（避免误报）
+- 健康恢复通知
+- 并行检查支持
+- Docker 一键部署
 
-## 安装要求
+---
 
-- Rust 1.70+
-- Cargo
+## Docker 部署（推荐）
 
-## 快速开始
-
-### 1. 克隆项目
-
-```bash
-git clone <repository-url>
-cd notify-error
-```
-
-### 2. 安装依赖
-
-```bash
-cargo build
-```
-
-### 3. 配置环境变量
-
-复制 `.env.example` 并创建 `.env` 文件：
+### 1. 配置环境变量
 
 ```bash
 cp .env.example .env
 ```
 
-#### 环境变量说明
-
-| 环境变量 | 类型 | 默认值 | 必须 | 说明 |
-|----------|------|--------|------|------|
-| `CHECK_INTERVAL_SECS` | 数字 | 30 | 否 | 检查间隔（秒） |
-| `FAILURE_THRESHOLD` | 数字 | 1 | 否 | 失败阈值（连续失败几次后发送通知） |
-| `RECOVERY_NOTIFICATION` | 布尔 | true | 否 | 是否发送恢复通知 |
-| `FEISHU_WEBHOOK_URL` | 字符串 | - | 是 | 飞书机器人 webhook URL |
-| `FEISHU_BOT_SECRET` | 字符串 | - | 否 | 飞书机器人密钥（如需签名验证） |
-| `FEISHU_USER_IDS` | 字符串 | - | 否 | 需要提及的用户ID列表（逗号分隔） |
-
-#### 环境变量示例
-
-编辑 `.env` 文件：
+编辑 `.env`，填入飞书机器人的 webhook 地址和密钥：
 
 ```env
-# 检查间隔（秒）
 CHECK_INTERVAL_SECS=30
-
-# 失败阈值（连续失败几次后发送通知）
 FAILURE_THRESHOLD=3
-
-# 是否发送恢复通知
 RECOVERY_NOTIFICATION=true
-
-# 飞书机器人 webhook URL
-FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/your-webhook-url
-
-# 飞书机器人密钥（可选，如需签名验证）
-FEISHU_BOT_SECRET=your-bot-secret
-
-# 需要提及的用户ID（可选，多个用户用逗号分隔）
-FEISHU_USER_IDS=ou_xxxxxxxxx,ou_yyyyyyyyy
+FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/xxx
+FEISHU_BOT_SECRET=your-secret
+FEISHU_USER_IDS=ou_xxx,ou_yyy
 ```
 
-#### 示例配置文件
+### 2. 配置监控 URL
 
-创建 `.env.production` 用于生产环境：
-
-```env
-CHECK_INTERVAL_SECS=60
-FAILURE_THRESHOLD=5
-RECOVERY_NOTIFICATION=true
-FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/production-webhook-url
-FEISHU_BOT_SECRET=production-bot-secret
-FEISHU_USER_IDS=ou_xxxxxxxxx
-```
-
-创建 `.env.development` 用于开发环境：
-
-```env
-CHECK_INTERVAL_SECS=10
-FAILURE_THRESHOLD=2
-RECOVERY_NOTIFICATION=false
-FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/dev-webhook-url
-FEISHU_BOT_SECRET=dev-bot-secret
-```
-
-### 4. 配置监控URL
-
-创建 `config.json` 文件来定义要监控的URL：
+编辑 `config.json`，添加要监控的网址：
 
 ```json
 {
@@ -108,295 +45,178 @@ FEISHU_BOT_SECRET=dev-bot-secret
     {
       "url": "https://www.example.com",
       "expected_status": 200,
-      "expected_keyword": "Example Domain",
       "timeout_secs": 10,
-      "method": "GET",
-      "headers": {
-        "User-Agent": "Mozilla/5.0 (compatible; URL Monitor)"
-      },
-      "custom_alert_message": "🚨 网站 {url} 访问失败！\n状态码: {status_code}\n错误信息: {error_message}\n响应时间: {response_time}ms\n时间: {timestamp}"
-    }
-  ]
-}
-```
-
-#### 配置项说明
-
-- `url`: 要监控的URL
-- `expected_status`: 期望的HTTP状态码（可选，默认为200-299）
-- `expected_keyword`: 期望在响应内容中包含的关键词（可选）
-- `timeout_secs`: 请求超时时间（秒）
-- `method`: HTTP方法（GET, POST, HEAD等）
-- `headers`: 自定义请求头（可选）
-- `custom_alert_message`: 自定义报警信息模板（可选）
-
-#### 自定义报警信息模板变量
-
-- `{url}`: 目标URL
-- `{status_code}`: HTTP状态码
-- `{error_message}`: 错误信息
-- `{response_time}`: 响应时间（毫秒）
-- `{timestamp}`: 当前时间戳
-
-### 5. 运行应用
-
-```bash
-cargo run
-```
-
-## 配置详解
-
-### 环境变量
-
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `CHECK_INTERVAL_SECS` | 30 | 检查间隔（秒） |
-| `FAILURE_THRESHOLD` | 1 | 失败阈值 |
-| `RECOVERY_NOTIFICATION` | true | 是否发送恢复通知 |
-| `FEISHU_WEBHOOK_URL` | - | 飞书机器人webhook URL（必须） |
-| `FEISHU_BOT_SECRET` | - | 飞书机器人密钥（可选） |
-| `FEISHU_USER_IDS` | - | 需要提及的用户ID列表 |
-
-### URL配置选项
-
-支持多种HTTP方法和自定义配置：
-
-```json
-{
-  "urls": [
+      "method": "GET"
+    },
     {
       "url": "https://api.example.com/health",
       "expected_status": 200,
-      "expected_keyword": "healthy",
-      "timeout_secs": 15,
-      "method": "GET",
-      "headers": {
-        "Authorization": "Bearer token",
-        "Custom-Header": "value"
-      },
-      "custom_alert_message": "🔴 API {url} 异常！状态: {status_code}, 错误: {error_message}"
-    },
-    {
-      "url": "https://example.com/api/check",
-      "expected_status": 201,
-      "timeout_secs": 10,
-      "method": "POST",
-      "headers": {
-        "Content-Type": "application/json"
-      }
+      "expected_keyword": "ok",
+      "timeout_secs": 5,
+      "method": "GET"
     }
   ]
 }
 ```
 
-## 飞书机器人设置
-
-1. 在飞书群聊中添加机器人
-2. 选择"自定义机器人"
-3. 设置机器人名称和头像
-4. 获取 webhook URL 并填写到 `.env` 文件中
-5. 如需安全验证，设置密钥并在 `.env` 中配置
-
-## 使用场景
-
-- 网站健康检查
-- API服务监控
-- 内部系统可用性监控
-- 第三方服务状态监控
-
-## 故障排除
-
-### 常见问题
-
-1. **无法加载 .env 文件**
-   - 确保 `.env` 文件位于项目根目录
-   - 检查文件权限
-
-2. **监控URL无法访问但显示正常**
-   - 检查 `expected_status` 和 `expected_keyword` 设置
-   - 验证网络连接
-
-3. **飞书通知发送失败**
-   - 检查 webhook URL 是否正确
-   - 验证密钥设置
-
-## Windows平台编译和使用
-
-### 编译为Windows可执行文件
-
-如果您在Linux/macOS上交叉编译Windows版本：
-
-1. 安装Windows目标工具链：
-   ```bash
-   rustup target add x86_64-pc-windows-gnu
-   ```
-
-2. 安装Windows交叉编译工具（以Ubuntu为例）：
-   ```bash
-   sudo apt-get install gcc-mingw-w64-x86-64
-   ```
-
-3. 编译Windows版本：
-   ```bash
-   cargo build --release --target x86_64-pc-windows-gnu
-   ```
-   
-   编译后的可执行文件将在 `target/x86_64-pc-windows-gnu/release/url-monitor.exe`
-
-### 在Windows上直接编译
-
-1. 在Windows上安装Rust：
-   - 下载并运行 https://win.rustup.rs/
-   - 按照提示完成安装
-
-2. 克隆或下载项目源码：
-   ```cmd
-   git clone <repository-url>
-   cd notify-error
-   ```
-
-3. 编译项目：
-   ```cmd
-   cargo build --release
-   ```
-   
-   编译后的可执行文件将在 `target/release/url-monitor.exe`
-
-### Windows上运行
-
-1. 创建配置文件 `.env` 和 `config.json`（参考前面的配置说明）
-2. 在命令提示符或PowerShell中运行：
-   ```cmd
-   url-monitor.exe
-   ```
-
-## 开机自启和后台执行
-
-### Linux系统
-
-#### 使用systemd服务（推荐）
-
-1. 创建systemd服务文件：
-   ```bash
-   sudo nano /etc/systemd/system/url-monitor.service
-   ```
-
-2. 添加以下内容（根据您的实际路径调整）：
-   ```ini
-   [Unit]
-   Description=URL Monitor Service
-   After=network.target
-   StartLimitIntervalSec=0
-
-   [Service]
-   Type=simple
-   Restart=always
-   RestartSec=1
-   User=your_username
-   WorkingDirectory=/path/to/your/url-monitor
-   ExecStart=/path/to/your/url-monitor/target/release/url-monitor
-   Environment=ENV_FILE_PATH=/path/to/your/url-monitor/.env
-
-   [Install]
-   WantedBy=multi-user.target
-   ```
-
-3. 重新加载systemd并启用服务：
-   ```bash
-   sudo systemctl daemon-reload
-   sudo systemctl enable url-monitor
-   sudo systemctl start url-monitor
-   ```
-
-4. 检查服务状态：
-   ```bash
-   sudo systemctl status url-monitor
-   ```
-
-#### 使用nohup后台运行
+### 3. 构建并启动
 
 ```bash
-# 在后台运行并输出日志到文件
-nohup ./target/release/url-monitor > monitor.log 2>&1 &
+# 构建镜像并启动
+docker compose up -d --build
+
+# 查看日志
+docker compose logs -f
+
+# 停止
+docker compose down
 ```
 
-#### 使用screen/tmux
+### 4. 构建脚本
+
+也可以使用 `build.sh` 一键构建镜像：
 
 ```bash
-# 安装screen
-sudo apt install screen
+chmod +x build.sh
+./build.sh
+```
 
-# 创建一个新的screen会话
-screen -S url-monitor
+---
 
-# 运行程序
+## 本地开发运行
+
+### 环境要求
+
+- Rust 1.70+
+
+### 运行
+
+```bash
+# 克隆项目
+git clone <repo-url> && cd notify-error
+
+# 配置
+cp .env.example .env
+# 编辑 .env 和 config.json
+
+# 编译运行
+cargo run
+
+# 或直接运行 release 版本
+cargo build --release
 ./target/release/url-monitor
-
-# 按Ctrl+A, 然后按D分离会话
 ```
 
-### Windows系统
+---
 
-#### 使用任务计划程序
+## 配置说明
 
-1. 打开"任务计划程序"
-2. 点击"创建基本任务"
-3. 设置触发器为"计算机启动时"
-4. 选择"启动程序"
-5. 程序路径指向 `url-monitor.exe`
-6. 在"起始于"字段中指定程序所在的目录
+### 环境变量
 
-#### 创建批处理脚本
+| 变量 | 默认值 | 必填 | 说明 |
+|------|--------|------|------|
+| `CHECK_INTERVAL_SECS` | 30 | 否 | 检查间隔（秒） |
+| `FAILURE_THRESHOLD` | 1 | 否 | 连续失败 N 次后才发告警 |
+| `RECOVERY_NOTIFICATION` | true | 否 | 服务恢复时是否通知 |
+| `PARALLEL_CHECKS` | true | 否 | 是否并行检查多个 URL |
+| `MAX_PARALLEL_CHECKS` | 5 | 否 | 最大并行检查数 |
+| `FEISHU_WEBHOOK_URL` | - | **是** | 飞书机器人 webhook 地址 |
+| `FEISHU_BOT_SECRET` | - | 否 | 飞书机器人签名密钥 |
+| `FEISHU_USER_IDS` | - | 否 | 要 @ 的用户 ID，逗号分隔 |
 
-创建 `start-monitor.bat`：
-```batch
-@echo off
-cd /d "C:\path\to\your\url-monitor"
-start /min url-monitor.exe
+### config.json 配置项
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `url` | string | 是 | 监控目标 URL |
+| `expected_status` | number | 否 | 期望的 HTTP 状态码，默认 2xx |
+| `expected_keyword` | string | 否 | 响应内容中必须包含的关键词 |
+| `timeout_secs` | number | 否 | 请求超时（秒），默认 10 |
+| `method` | string | 否 | HTTP 方法，默认 GET |
+| `headers` | object | 否 | 自定义请求头 |
+| `request_body` | string | 否 | 请求体（POST/PUT 等） |
+| `custom_alert_message` | string | 否 | 自定义告警消息模板 |
+
+### 告警消息模板变量
+
+自定义告警消息中可使用以下变量：
+
+- `{url}` — 目标 URL
+- `{status_code}` — HTTP 状态码
+- `{error_message}` — 错误详情
+- `{response_time}` — 响应时间（毫秒）
+- `{timestamp}` — 当前时间
+
+示例：
+
+```json
+{
+  "custom_alert_message": "🚨 {url} 挂了！\n状态码: {status_code}\n错误: {error_message}\n时间: {timestamp}"
+}
 ```
 
-将此脚本添加到Windows启动文件夹：
-1. 按 Win+R，输入 `shell:startup`
-2. 将批处理脚本复制到打开的文件夹中
+---
 
-#### 使用NSSM (Non-Sucking Service Manager)
+## 飞书机器人配置
 
-1. 下载NSSM: https://nssm.cc/download
-2. 安装服务：
-   ```cmd
-   nssm install URLMonitor "C:\path\to\your\url-monitor.exe"
-   nssm start URLMonitor
-   ```
+1. 在飞书群聊中点击「设置」→「群机器人」→「添加机器人」
+2. 选择「自定义机器人」
+3. 设置名称和头像
+4. 复制 webhook URL 填入 `.env` 的 `FEISHU_WEBHOOK_URL`
+5. （可选）开启签名校验，将密钥填入 `FEISHU_BOT_SECRET`
 
-### Docker部署（可选）
+---
 
-创建 `Dockerfile`：
-```Dockerfile
-FROM debian:bullseye-slim
+## 后台运行
 
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+### systemd（推荐）
 
-COPY target/release/url-monitor /app/url-monitor
-COPY .env /app/.env
-COPY config.json /app/config.json
+```bash
+sudo tee /etc/systemd/system/url-monitor.service <<EOF
+[Unit]
+Description=URL Monitor
+After=network.target
 
-WORKDIR /app
+[Service]
+Type=simple
+Restart=always
+RestartSec=5
+WorkingDirectory=/opt/url-monitor
+ExecStart=/opt/url-monitor/url-monitor
 
-CMD ["./url-monitor"]
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now url-monitor
 ```
 
-创建 `docker-compose.yml`：
-```yaml
-version: '3'
-services:
-  url-monitor:
-    build: .
-    restart: always
-    volumes:
-      - ./config.json:/app/config.json
-      - ./logs:/app/logs
+### Docker 后台运行
+
+```bash
+docker compose up -d
 ```
 
-## 许可证
+---
 
-MIT License
+## 项目结构
+
+```
+notify-error/
+├── src/
+│   ├── main.rs           # 入口、配置解析、监控循环
+│   ├── lib.rs            # 库入口
+│   └── feishu_client.rs  # 飞书通知模块
+├── config.json           # URL 监控配置
+├── .env                  # 环境变量（不提交 Git）
+├── .env.example          # 环境变量示例
+├── dockerfile            # Docker 镜像构建文件
+├── docker-compose.yml    # Docker Compose 部署配置
+├── build.sh              # 一键构建脚本
+└── Cargo.toml
+```
+
+## License
+
+MIT

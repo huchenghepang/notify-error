@@ -1,0 +1,25 @@
+services:
+  url-monitor:
+    image: url-monitor:latest
+    container_name: url-monitor
+    network_mode: "host"
+    environment:
+      - CHECK_INTERVAL_SECS=${CHECK_INTERVAL_SECS:-60}
+      - FAILURE_THRESHOLD=${FAILURE_THRESHOLD:-5}
+      - RECOVERY_NOTIFICATION=${RECOVERY_NOTIFICATION:-true}
+      - PARALLEL_CHECKS=${PARALLEL_CHECKS:-true}
+      - MAX_PARALLEL_CHECKS=${MAX_PARALLEL_CHECKS:-5}
+      - FEISHU_WEBHOOK_URL=${FEISHU_WEBHOOK_URL}
+      - FEISHU_BOT_SECRET=${FEISHU_BOT_SECRET}
+      - FEISHU_USER_IDS=${FEISHU_USER_IDS}
+    env_file:
+      - .env
+    volumes:
+      - ./config.json:/app/config.json:ro
+      - ./logs:/app/logs
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

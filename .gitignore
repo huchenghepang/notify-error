@@ -1,2 +1,7 @@
 /target
 .env
+.deploy.env
+backups
+logs
+config.json
+.env.production
