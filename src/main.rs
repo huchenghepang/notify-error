@@ -2,15 +2,15 @@ use anyhow::{anyhow, Result};
 use base64::{engine::general_purpose, Engine as _};
 use chrono::Local;
 use hmac::{Hmac, Mac};
-use reqwest::blocking::Client;
+use reqwest::Client;
 use serde::Deserialize;
 use serde_json::json;
 use sha2::Sha256;
+use url_monitor::feishu_client::{self, CheckResult, FeishuConfig};
 use std::collections::HashMap;
 use std::fs;
-use std::thread;
 use std::time::{Duration, Instant};
-use rayon::prelude::*;
+use tokio::time::sleep;
 
 // URL 监控配置
 #[derive(Debug, Clone, Deserialize)]
@@ -185,18 +185,8 @@ impl Config {
     }
 }
 
-// 检查结果
-#[derive(Debug, Clone)]
-struct CheckResult {
-    url: String,
-    success: bool,
-    status_code: Option<u16>,
-    error_message: Option<String>,
-    response_time_ms: u64,
-}
-
-// 检查 URL 可用性
-fn check_url(client: &Client, config: &UrlMonitorConfig) -> CheckResult {
+// 异步检查 URL 可用性
+async fn check_url_async(client: &Client, config: &UrlMonitorConfig) -> CheckResult {
     let start = Instant::now();
 
     let mut request_builder = match config.method.to_uppercase().as_str() {
@@ -227,7 +217,8 @@ fn check_url(client: &Client, config: &UrlMonitorConfig) -> CheckResult {
 
     let response = request_builder
         .timeout(Duration::from_secs(config.timeout_secs))
-        .send();
+        .send()
+        .await;
 
     let response_time_ms = start.elapsed().as_millis() as u64;
 
@@ -259,7 +250,7 @@ fn check_url(client: &Client, config: &UrlMonitorConfig) -> CheckResult {
             }
 
             if let Some(keyword) = &config.expected_keyword {
-                match resp.text() {
+                match resp.text().await {
                     Ok(body) => {
                         if !body.contains(keyword) {
                             return CheckResult {
@@ -324,184 +315,56 @@ fn generate_signature(secret: &str) -> (String, String) {
     let timestamp = Local::now().timestamp();
     let ts = timestamp.to_string();
 
-    // 使用 timestamp + "\n" + secret 作为 HMAC 密钥
     let key_string = format!("{}\n{}", ts, secret);
 
     type HmacSha256 = Hmac<Sha256>;
-    // 使用拼接后的字符串作为 HMAC 密钥
     let mut mac = HmacSha256::new_from_slice(key_string.as_bytes()).expect("HMAC key is valid");
-    // 对空字符串进行加密（根据飞书官方文档）
     mac.update(b"");
     let result = mac.finalize();
-    // 使用 Base64 编码（根据飞书官方文档）
     let sign = general_purpose::STANDARD.encode(result.into_bytes());
 
     (ts, sign)
 }
 
-// 发送飞书通知
-fn send_feishu_notification_with_client(
-    client: &Client,
+async fn send_feishu_notification_with_client(
     config: &Config,
     results: &[CheckResult],
     is_recovery: bool,
 ) -> Result<()> {
-    let (title, content_text) = if is_recovery {
-        ("✅ 服务恢复通知", "以下服务已恢复正常")
-    } else {
-        ("🚨 服务异常告警", "以下服务出现异常")
-    };
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|e| anyhow!("创建客户端失败: {}", e))?;
 
-    let mut details = String::new();
-    for result in results {
-        if let Some(url_config) = config.urls.iter().find(|c| c.url == result.url) {
-            if let Some(ref custom_msg) = url_config.custom_alert_message {
-                let custom_message = custom_msg
-                    .replace("{url}", &result.url)
-                    .replace(
-                        "{status_code}",
-                        &result
-                            .status_code
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|| "N/A".to_string()),
-                    )
-                    .replace(
-                        "{error_message}",
-                        &result.error_message.as_deref().unwrap_or("无错误信息"),
-                    )
-                    .replace("{response_time}", &result.response_time_ms.to_string())
-                    .replace(
-                        "{timestamp}",
-                        &Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
-                    );
-
-                details.push_str(&format!("\n\n{}", custom_message));
-            } else {
-                details.push_str(&format!("\n\n**{}**", result.url));
-                if let Some(status) = result.status_code {
-                    details.push_str(&format!("\n- 状态码: {}", status));
-                }
-                if let Some(err) = &result.error_message {
-                    details.push_str(&format!("\n- 错误: {}", err));
-                }
-                details.push_str(&format!("\n- 响应时间: {}ms", result.response_time_ms));
-            }
-        } else {
-            details.push_str(&format!("\n\n**{}**", result.url));
-            if let Some(status) = result.status_code {
-                details.push_str(&format!("\n- 状态码: {}", status));
-            }
-            if let Some(err) = &result.error_message {
-                details.push_str(&format!("\n- 错误: {}", err));
-            }
-            details.push_str(&format!("\n- 响应时间: {}ms", result.response_time_ms));
-        }
-    }
-
-    let at_users = if !config.feishu_user_ids.is_empty() {
-        let ats: Vec<String> = config
-            .feishu_user_ids
-            .iter()
-            .map(|id| format!("<at id={}></at>", id))
-            .collect();
-        format!("\n\n{}", ats.join(" "))
-    } else {
-        String::new()
-    };
-
-    let message = format!(
-        "{}\n\n⏰ 时间: {}\n{}",
-        title,
-        Local::now().format("%Y-%m-%d %H:%M:%S"),
-        content_text
+    let feishu_config = FeishuConfig::new(
+        config.feishu_webhook_url.clone(),
+        config.feishu_secret.clone(),
     );
 
-    let content = json!({
-        "msg_type": "post",
-        "content": {
-            "post": {
-                "zh_cn": {
-                    "title": title,
-                    "content": [
-                        [
-                            {
-                                "tag": "text",
-                                "text": format!("{}{}{}", message, details, at_users)
-                            }
-                        ]
-                    ]
-                }
-            }
-        }
-    });
-
-    let mut request_builder = client.post(&config.feishu_webhook_url);
-
-    if let Some(ref secret) = config.feishu_secret {
-        let (timestamp, signature) = generate_signature(secret);
-        request_builder = request_builder
-            .header("Timestamp", timestamp)
-            .header("Sign", signature);
-    }
-
-    // 如果设置了密钥，需要在请求体中添加timestamp和sign
-    let final_content = if let Some(ref secret) = config.feishu_secret {
-        let (timestamp, signature) = generate_signature(secret);
-        json!({
-            "timestamp": timestamp,
-            "sign": signature,
-            "msg_type": content["msg_type"],
-            "content": content["content"]
+    let url_configs: Vec<feishu_client::UrlMonitorConfig> = config
+        .urls
+        .iter()
+        .map(|url_info| feishu_client::UrlMonitorConfig {
+            url: url_info.url.clone(),
+            expected_status: url_info.expected_status,
+            expected_keyword: url_info.expected_keyword.clone(),
+            timeout_secs: url_info.timeout_secs,
+            method: url_info.method.clone(),
+            request_body: url_info.request_body.clone(),
+            custom_alert_message: url_info.custom_alert_message.clone(),
+            headers: url_info.headers.clone(),
         })
-    } else {
-        content
-    };
+        .collect();
 
-    let response = request_builder
-        .json(&final_content)
-        .send()?;
-
-    let status = response.status();
-    let response_text = response.text().unwrap_or_default();
-
-    // 解析响应以检查飞书API的错误码
-    let success = if let Ok(json_response) = serde_json::from_str::<serde_json::Value>(&response_text) {
-        // 飞书API通常用code字段表示结果，0表示成功
-        if let Some(code) = json_response.get("code") {
-            code.as_i64() == Some(0)  // 飞书API中code为0表示成功
-        } else {
-            // 如果没有code字段，按HTTP状态判断
-            status.is_success()
-        }
-    } else {
-        // 如果不能解析JSON，按HTTP状态判断
-        status.is_success()
-    };
-
-    if success {
-        println!(
-            "[{}] 📤 飞书通知发送成功",
-            Local::now().format("%Y-%m-%d %H:%M:%S")
-        );
-        Ok(())
-    } else {
-        // 解析飞书API的错误响应
-        let error_detail = if let Ok(json_response) = serde_json::from_str::<serde_json::Value>(&response_text) {
-            if let Some(code) = json_response.get("code") {
-                if let Some(msg) = json_response.get("msg") {
-                    format!("飞书API错误 - 代码: {}, 消息: {}", code, msg)
-                } else {
-                    format!("飞书API错误 - 代码: {}, 响应: {}", code, response_text)
-                }
-            } else {
-                format!("HTTP {}: {}", status, response_text)
-            }
-        } else {
-            format!("HTTP {}: {}", status, response_text)
-        };
-        
-        Err(anyhow!("飞书通知发送失败: {}", error_detail))
-    }
+    feishu_client::send_service_notification(
+        &client,
+        &feishu_config,
+        results,
+        is_recovery,
+        &url_configs,
+    )
+    .await
 }
 
 // URL 状态追踪器
@@ -510,6 +373,9 @@ struct UrlStatus {
     consecutive_failures: u32,
     last_success: bool,
     last_notification_time: Option<chrono::DateTime<Local>>,
+    has_recovered_since_last_failure: bool,
+    // 新增：记录当前是否需要发送通知（用于重试）
+    pending_notification: bool,
 }
 
 impl UrlStatus {
@@ -518,6 +384,8 @@ impl UrlStatus {
             consecutive_failures: 0,
             last_success: true,
             last_notification_time: None,
+            has_recovered_since_last_failure: false,
+            pending_notification: false,
         }
     }
 
@@ -527,32 +395,58 @@ impl UrlStatus {
         let mut should_notify_recovery = false;
 
         if result.success {
+            // 服务恢复正常
             if !self.last_success {
                 should_notify_recovery = true;
+                self.last_notification_time = None;
+                self.has_recovered_since_last_failure = true;
+                self.pending_notification = false; // 恢复时清除待发送标记
             }
             self.consecutive_failures = 0;
             self.last_success = true;
         } else {
+            // 服务检查失败
             self.consecutive_failures += 1;
+            
+            if self.last_success {
+                self.has_recovered_since_last_failure = false;
+            }
+            
             self.last_success = false;
 
-            if self.consecutive_failures >= config.failure_threshold {
-                let should_notify = match self.last_notification_time {
-                    Some(last_time) => {
-                        let elapsed = now - last_time;
-                        elapsed.num_minutes() >= 30
+            // 判断是否需要发送失败通知（包括待重试的情况）
+            let should_send = if self.consecutive_failures >= config.failure_threshold {
+                if self.pending_notification {
+                    // 有待发送的通知，继续尝试
+                    true
+                } else {
+                    match self.last_notification_time {
+                        Some(last_time) => {
+                            let elapsed = now - last_time;
+                            self.has_recovered_since_last_failure || elapsed.num_minutes() >= 30
+                        }
+                        None => true,
                     }
-                    None => true,
-                };
-
-                if should_notify {
-                    should_notify_failure = true;
-                    self.last_notification_time = Some(now);
                 }
+            } else {
+                false
+            };
+
+            if should_send {
+                should_notify_failure = true;
+                // 注意：这里不立即更新 last_notification_time，等待发送成功后再更新
+                self.pending_notification = true;
             }
         }
 
         (should_notify_failure, should_notify_recovery)
+    }
+
+    // 标记通知已成功发送
+    fn mark_notification_sent(&mut self) {
+        self.pending_notification = false;
+        self.last_notification_time = Some(Local::now());
+        self.has_recovered_since_last_failure = false;
     }
 }
 
@@ -575,28 +469,27 @@ fn print_check_result(result: &CheckResult) {
     }
 }
 
-// 并行检查所有 URL（修复所有权问题）
-fn check_urls_parallel(
+// 并行检查所有 URL（异步版本）
+async fn check_urls_parallel(
     client: &Client,
     config: &Config,
     url_statuses: &mut [UrlStatus],
 ) -> (Vec<CheckResult>, Vec<CheckResult>) {
-    // 使用 rayon 并行执行检查
-    let results: Vec<CheckResult> = config
+    let futures: Vec<_> = config
         .urls
-        .par_iter()
-        .map(|url_config| check_url(client, url_config))
+        .iter()
+        .map(|url_config| check_url_async(client, url_config))
         .collect();
+    
+    let results = futures::future::join_all(futures).await;
 
     let mut failed_results = Vec::new();
     let mut recovered_results = Vec::new();
 
-    // 先打印所有结果
     for result in &results {
         print_check_result(result);
     }
 
-    // 然后更新状态并收集需要通知的结果
     for (i, result) in results.iter().enumerate() {
         let (should_notify_failure, should_notify_recovery) =
             url_statuses[i].update(result, config);
@@ -612,8 +505,8 @@ fn check_urls_parallel(
     (failed_results, recovered_results)
 }
 
-// 串行检查所有 URL（修复所有权问题）
-fn check_urls_serial(
+// 串行检查所有 URL（异步版本）
+async fn check_urls_serial(
     client: &Client,
     config: &Config,
     url_statuses: &mut [UrlStatus],
@@ -622,14 +515,12 @@ fn check_urls_serial(
     let mut recovered_results = Vec::new();
     let mut results = Vec::new();
 
-    // 先执行所有检查并收集结果
     for url_config in &config.urls {
-        let result = check_url(client, url_config);
+        let result = check_url_async(client, url_config).await;
         print_check_result(&result);
         results.push(result);
     }
 
-    // 然后更新状态并收集需要通知的结果
     for (i, result) in results.iter().enumerate() {
         let (should_notify_failure, should_notify_recovery) =
             url_statuses[i].update(result, config);
@@ -645,13 +536,13 @@ fn check_urls_serial(
     (failed_results, recovered_results)
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     println!("🚀 启动 URL 监控服务");
     println!("{}", "=".repeat(60));
 
     let config = Config::from_env()?;
     println!("📋 配置信息:");
-    println!("飞书机器人配置:");
     println!("  - 飞书 Webhook URL: {}", config.feishu_webhook_url);
     println!("  - 检查间隔: {} 秒", config.check_interval_secs);
     println!("  - 失败阈值: {} 次", config.failure_threshold);
@@ -662,7 +553,7 @@ fn main() -> Result<()> {
     }
     println!("  - 监控 URL 数量: {}", config.urls.len());
     println!(
-        "  - 飞书机器人密钥: {}",
+        "  - 飞书签名密钥: {}",
         if config.feishu_secret.is_some() {
             "已配置"
         } else {
@@ -684,151 +575,55 @@ fn main() -> Result<()> {
     }
     println!("{}", "=".repeat(60));
 
-    // 创建可复用的 HTTP 客户端
-    let shared_client = Client::builder()
+    let client = Client::builder()
         .timeout(Duration::from_secs(30))
         .pool_max_idle_per_host(10)
         .pool_idle_timeout(Duration::from_secs(90))
         .build()
         .map_err(|e| anyhow!("创建 HTTP 客户端失败: {}", e))?;
 
-    // 创建通知专用客户端
-    let notification_client = Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-        .map_err(|e| anyhow!("创建通知客户端失败: {}", e))?;
-
     let mut url_statuses: Vec<UrlStatus> = (0..config.urls.len()).map(|_| UrlStatus::new()).collect();
 
     loop {
         let (failed_results, recovered_results) = if config.parallel_checks {
-            check_urls_parallel(&shared_client, &config, &mut url_statuses)
+            check_urls_parallel(&client, &config, &mut url_statuses).await
         } else {
-            check_urls_serial(&shared_client, &config, &mut url_statuses)
+            check_urls_serial(&client, &config, &mut url_statuses).await
         };
 
-        // 发送失败通知
+        // 发送失败通知（带重试逻辑）
         if !failed_results.is_empty() {
-            if let Err(e) = send_feishu_notification_with_client(
-                &notification_client,
-                &config,
-                &failed_results,
-                false,
-            ) {
-                eprintln!("❌ 发送飞书通知失败: {}", e);
+            match send_feishu_notification_with_client(&config, &failed_results, false).await {
+                Ok(_) => {
+                    println!("✅ 失败通知发送成功");
+                    // 发送成功后，标记通知已发送
+                    for status in &mut url_statuses {
+                        if status.pending_notification {
+                            status.mark_notification_sent();
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("❌ 发送飞书通知失败: {}", e);
+                    // 发送失败时不更新状态，下次循环会继续尝试
+                    println!("⚠️ 将在下次检查时重试发送通知");
+                }
             }
         }
 
         // 发送恢复通知
         if config.recovery_notification && !recovered_results.is_empty() {
-            if let Err(e) = send_feishu_notification_with_client(
-                &notification_client,
-                &config,
-                &recovered_results,
-                true,
-            ) {
-                eprintln!("❌ 发送恢复通知失败: {}", e);
+            match send_feishu_notification_with_client(&config, &recovered_results, true).await {
+                Ok(_) => {
+                    println!("✅ 恢复通知发送成功");
+                }
+                Err(e) => {
+                    eprintln!("❌ 发送恢复通知失败: {}", e);
+                }
             }
         }
 
         println!("--- 等待 {} 秒后下次检查 ---", config.check_interval_secs);
-        thread::sleep(Duration::from_secs(config.check_interval_secs));
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_check_url_success() {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .unwrap();
-
-        let config = UrlMonitorConfig {
-            url: "https://httpbin.org/status/200".to_string(),
-            expected_status: Some(200),
-            expected_keyword: None,
-            timeout_secs: 5,
-            method: "GET".to_string(),
-            headers: HashMap::new(),
-            request_body: None,
-            custom_alert_message: None,
-        };
-
-        let result = check_url(&client, &config);
-        assert!(result.success);
-        assert_eq!(result.status_code, Some(200));
-    }
-
-    #[test]
-    fn test_check_url_timeout() {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(1))
-            .build()
-            .unwrap();
-
-        let config = UrlMonitorConfig {
-            url: "https://httpbin.org/delay/10".to_string(),
-            expected_status: Some(200),
-            expected_keyword: None,
-            timeout_secs: 2,
-            method: "GET".to_string(),
-            headers: HashMap::new(),
-            request_body: None,
-            custom_alert_message: None,
-        };
-
-        let result = check_url(&client, &config);
-        assert!(!result.success);
-        assert!(result.error_message.unwrap().contains("超时"));
-    }
-
-    #[test]
-    fn test_url_status_update() {
-        let mut status = UrlStatus::new();
-        let config = Config {
-            check_interval_secs: 30,
-            urls: vec![],
-            feishu_webhook_url: "".to_string(),
-            feishu_secret: None,
-            feishu_user_ids: vec![],
-            failure_threshold: 3,
-            recovery_notification: true,
-            parallel_checks: false,
-            max_parallel_checks: 5,
-        };
-
-        let result_success = CheckResult {
-            url: "https://test.com".to_string(),
-            success: true,
-            status_code: Some(200),
-            error_message: None,
-            response_time_ms: 100,
-        };
-
-        let (_, recovery) = status.update(&result_success, &config);
-        assert!(!recovery);
-        assert_eq!(status.consecutive_failures, 0);
-        assert!(status.last_success);
-
-        let result_failure = CheckResult {
-            url: "https://test.com".to_string(),
-            success: false,
-            status_code: None,
-            error_message: Some("Error".to_string()),
-            response_time_ms: 100,
-        };
-
-        for i in 1..=3 {
-            let (notify, _) = status.update(&result_failure, &config);
-            if i >= 3 {
-                assert!(notify);
-            } else {
-                assert!(!notify);
-            }
-        }
+        sleep(Duration::from_secs(config.check_interval_secs)).await;
     }
 }
